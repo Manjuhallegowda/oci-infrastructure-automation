@@ -1,49 +1,73 @@
 import oci
 import os
 import time
-import sys
+import logging
+from threading import Thread
+from datetime import datetime
 
-COMPARTMENT_ID = os.getenv("OCI_COMPARTMENT_ID")
-AVAILABILITY_DOMAIN = os.getenv("OCI_AD")
-IMAGE_ID = os.getenv("OCI_IMAGE_ID")
-SUBNET_ID = os.getenv("OCI_SUBNET_ID")
-SHAPE = "VM.Standard.A1.Flex"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.FileHandler("hunter.log"), logging.StreamHandler()]
+)
 
-def launch_instance(compute_client):
-    """Attempts to provision a free-tier ARM instance."""
-    launch_details = oci.core.models.LaunchInstanceDetails(
-        display_name="DevOps-Automation-Instance",
-        compartment_id=COMPARTMENT_ID,
-        availability_domain=AVAILABILITY_DOMAIN,
-        shape=SHAPE,
-        shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(ocpus=4, memory_in_gbs=24),
-        source_details=oci.core.models.InstanceSourceViaImageDetails(image_id=IMAGE_ID),
-        create_vnic_details=oci.core.models.CreateVnicDetails(subnet_id=SUBNET_ID, assign_public_ip=True)
-    )
+class OCIHunter:
+    def __init__(self):
+        self.config = oci.config.from_file()
+        self.compute_client = oci.core.ComputeClient(self.config)
+        
+        self.compartment_id = os.getenv("OCI_COMPARTMENT_ID")
+        self.subnet_id = os.getenv("OCI_SUBNET_ID")
+        self.image_id = os.getenv("OCI_IMAGE_ID")
+        self.shape = "VM.Standard.A1.Flex"
+        
+        self.ads = [
+            os.getenv("OCI_AD_1"), 
+            os.getenv("OCI_AD_2"), 
+            os.getenv("OCI_AD_3")
+        ]
 
-    try:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Attempting to provision ARM instance...")
-        response = compute_client.launch_instance(launch_details)
-        print("✅ Success! Instance is being provisioned.")
-        print(f"Instance ID: {response.data.id}")
-        return True
-    except oci.exceptions.ServiceError as e:
-        if e.status == 500 and "Out of host capacity" in e.message:
-            print("❌ Capacity reached. Retrying in 60 seconds...")
-        else:
-            print(f"⚠️ Unexpected Error: {e.message}")
-        return False
+    def create_instance(self, ad_name):
+        launch_details = oci.core.models.LaunchInstanceDetails(
+            display_name=f"Ranstack-Prod-Node-{datetime.now().strftime('%H%M')}",
+            compartment_id=self.compartment_id,
+            availability_domain=ad_name,
+            shape=self.shape,
+            shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(ocpus=4, memory_in_gbs=24),
+            source_details=oci.core.models.InstanceSourceViaImageDetails(image_id=self.image_id),
+            create_vnic_details=oci.core.models.CreateVnicDetails(subnet_id=self.subnet_id, assign_public_ip=True)
+        )
 
-def main():
-    config = oci.config.from_file()
-    compute_client = oci.core.ComputeClient(config)
+        while True:
+            try:
+                logging.info(f"Targeting AD: {ad_name} | Searching for resources...")
+                response = self.compute_client.launch_instance(launch_details)
+                logging.info(f"🎯 SUCCESS! Instance {response.data.id} is live in {ad_name}")
+                os._exit(0)  # Stop all threads once one instance is caught
+            except oci.exceptions.ServiceError as e:
+                if e.status == 500 and "Out of host capacity" in e.message:
+                    logging.warning(f"Capacity Full in {ad_name}. Cooling down for 30s...")
+                    time.sleep(30)
+                else:
+                    logging.error(f"Critical API Error in {ad_name}: {e.message}")
+                    break
 
-    # Hunt loop
-    while True:
-        success = launch_instance(compute_client)
-        if success:
-            break
-        time.sleep(60)
+    def start_hunt(self):
+        threads = []
+        logging.info("🚀 Initializing Global OCI Hunter Mode...")
+        for ad in self.ads:
+            if ad:
+                t = Thread(target=self.create_instance, args=(ad,))
+                t.start()
+                threads.append(t)
+        
+        for t in threads:
+            t.join()
 
 if __name__ == "__main__":
-    main()
+    required_vars = ["OCI_COMPARTMENT_ID", "OCI_SUBNET_ID", "OCI_IMAGE_ID"]
+    if all(os.getenv(var) for var in required_vars):
+        hunter = OCIHunter()
+        hunter.start_hunt()
+    else:
+        logging.error("Missing Environment Variables. Check your Runbook.")
