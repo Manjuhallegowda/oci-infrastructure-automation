@@ -22,7 +22,7 @@ jobs:
         run: flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: Security Scan with Bandit
-        [cite_start]run: bandit -r src/ [cite: 15, 34]
+        run: bandit -r src/
 
       - name: Run Unit Tests
-        [cite_start]run: pytest tests/ [cite: 15, 35]
+        run: pytest tests/
